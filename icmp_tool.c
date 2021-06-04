@@ -1,5 +1,4 @@
-// includes
-#include "icmp_tools.h"
+#include "icmp_tool.h"
 
 #include <stdio.h>
 #include <assert.h>
@@ -56,4 +55,82 @@ static int time_passed(int packets_received, struct timeval *current_time,
     }
 
     return 0;
+}
+
+int wait_for_icmps(int sockfd, uint16_t pid, uint8_t ttl, struct timeval *start_time,
+                   struct timeval *end_time, int nqueries) {
+    int packets_received = 0;
+    int host_reached = 0;
+
+    struct timeval deltas[nqueries];
+    struct timeval current_time;
+
+    printf("%d. ", ttl);
+
+    gettimeofday(&current_time, NULL);
+    while (!time_passed(packets_received, &current_time, end_time, nqueries)) {
+        struct sockaddr_in sender;
+        socklen_t sender_len = sizeof(sender);
+        uint8_t buffer[IP_MAXPACKET];
+
+        fd_set descriptors;
+        FD_ZERO(&descriptors);
+        FD_SET(sockfd, &descriptors);
+        struct timeval tv;
+        timersub(end_time, &current_time, &tv);
+        int ready = select(sockfd + 1, &descriptors, NULL, NULL, &tv);
+        if (ready < 0) {
+            handle_error("select");
+        } if (ready == 0) {
+            break;
+        }
+
+        ssize_t packet_len = recvfrom(sockfd, buffer, IP_MAXPACKET, 0, (struct sockaddr *)&sender, &sender_len);
+        if (packet_len < 0) {
+            handle_error("recvfrom");
+        }
+
+        gettimeofday(&current_time, NULL);
+
+        char sender_ip_str[20];
+        const char *inet_ntop_ret = inet_ntop(AF_INET, &(sender.sin_addr), sender_ip_str, sizeof(sender_ip_str));
+        assert(inet_ntop_ret != NULL);
+
+        struct iphdr *ip_header = (struct iphdr *) buffer;
+        ssize_t ip_header_len = 4 * ip_header->ihl;
+
+        struct icmphdr *icmp_ptr = (struct icmphdr *)(buffer + ip_header_len);
+
+        uint8_t icmp_type = icmp_ptr->type;
+        int proper_type = icmp_type == ICMP_TIME_EXCEEDED || icmp_type == ICMP_ECHOREPLY;
+
+        if (icmp_type == ICMP_TIME_EXCEEDED) {
+            struct iphdr *inner_ip_header = (void *) icmp_ptr + 8;
+            ssize_t inner_ip_header_len = 4 * inner_ip_header->ihl;
+            icmp_ptr = (void *)inner_ip_header + inner_ip_header_len;
+        }
+
+        if (proper_type && icmp_ptr->un.echo.id == pid && icmp_ptr->un.echo.sequence == ttl) {
+            timersub(&current_time, start_time, &deltas[packets_received]);
+
+            printf("%s ", sender_ip_str);
+
+            packets_received++;
+            if (icmp_type == ICMP_ECHOREPLY) {
+                host_reached = 1;
+            }
+        }
+    }
+
+    if (packets_received == 0) {
+        printf("*");
+    } else {
+        for (int i = 0; i < packets_received; i++) {
+            printf(" %.1f ms ", deltas[i].tv_usec/1000.0);
+        }
+    }
+
+    printf("\n");
+
+    return host_reached;
 }
