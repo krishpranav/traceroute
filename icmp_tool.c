@@ -48,3 +48,12 @@ void send_single_icmp(int sockfd, const char *ip, uint16_t id, uint16_t sequence
         handle_error("sendto");
     }
 }
+
+static int time_passed(int packets_received, struct timeval *current_time,
+                       struct timeval *end_time, int nqueries) {
+    if (packets_received >= nqueries || timercmp(current_time, end_time, >)) {
+        return 1;
+    }
+
+    return 0;
+}
